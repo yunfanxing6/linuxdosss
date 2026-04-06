@@ -76,6 +76,9 @@ import sys
 import random
 import time
 import argparse
+import json
+import urllib.error
+import urllib.request
 from datetime import datetime
 
 # 检查依赖
@@ -151,6 +154,98 @@ class Logger:
     def debug(self, msg):
         if self.debug_mode:
             print(f"[{self._timestamp()}] [DEBUG] {msg}")
+
+
+class TelegramNotifier:
+    """Telegram 通知工具"""
+
+    def __init__(self, token=None, chat_id=None, logger=None):
+        self.token = token
+        self.chat_id = chat_id
+        self.log = logger or Logger()
+
+    @property
+    def enabled(self):
+        return bool(self.token and self.chat_id)
+
+    def send_message(self, text):
+        """发送 Telegram 消息"""
+        if not self.enabled:
+            return False
+
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        payload = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read().decode("utf-8", errors="ignore")
+
+            result = json.loads(body)
+            if not result.get("ok"):
+                desc = result.get("description", "unknown error")
+                raise ValueError(desc)
+
+            self.log.success("Telegram 通知发送成功")
+            return True
+
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError) as e:
+            self.log.warning(f"Telegram 通知发送失败: {e}")
+            return False
+
+
+def format_duration(seconds):
+    """格式化时长"""
+    total_seconds = max(int(seconds), 0)
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+
+    if hours:
+        return f"{hours}时{minutes}分{secs}秒"
+    return f"{minutes}分{secs}秒"
+
+
+def build_telegram_message(args, stats, elapsed_seconds, exit_code, error_message=""):
+    """构建 Telegram 通知内容"""
+    status_text = "✅ 成功" if exit_code == 0 else "❌ 失败"
+    trigger = os.environ.get("GITHUB_EVENT_NAME", "local")
+    trigger_map = {
+        "schedule": "定时任务",
+        "workflow_dispatch": "手动触发",
+        "local": "本地运行",
+    }
+    trigger_text = trigger_map.get(trigger, trigger)
+
+    lines = [
+        "Linux.do 自动浏览任务完成",
+        f"状态: {status_text}",
+        f"触发方式: {trigger_text}",
+        f"目标帖子: {args.topics}",
+        f"浏览帖子: {stats.get('topics', 0)}",
+        f"点赞数: {stats.get('likes', 0)}",
+        f"滚动次数: {stats.get('floors', 0)}",
+        f"用时: {format_duration(elapsed_seconds)}",
+    ]
+
+    if error_message:
+        lines.append(f"错误信息: {error_message}")
+
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if repo and run_id:
+        lines.append(f"运行详情: https://github.com/{repo}/actions/runs/{run_id}")
+
+    return "\n".join(lines)
 
 
 # ============================================================================
@@ -547,6 +642,8 @@ def parse_args():
   LINUXDO_USERNAME  用户名
   LINUXDO_PASSWORD  密码
   LINUXDO_PROXY     代理地址（可选）
+  TELEGRAM_BOT_TOKEN Telegram Bot Token（可选）
+  TELEGRAM_CHAT_ID  Telegram Chat ID（可选）
         """,
     )
 
@@ -564,6 +661,14 @@ def parse_args():
     parser.add_argument(
         "--no-headless", action="store_true", help="禁用无头模式（显示浏览器窗口）"
     )
+    parser.add_argument(
+        "--tg-token",
+        help="Telegram Bot Token（或设置环境变量 TELEGRAM_BOT_TOKEN）",
+    )
+    parser.add_argument(
+        "--tg-chat-id",
+        help="Telegram Chat ID（或设置环境变量 TELEGRAM_CHAT_ID）",
+    )
     parser.add_argument("--debug", action="store_true", help="调试模式")
 
     return parser.parse_args()
@@ -577,6 +682,8 @@ def main():
     username = args.username or os.environ.get("LINUXDO_USERNAME")
     password = args.password or os.environ.get("LINUXDO_PASSWORD")
     proxy = args.proxy or os.environ.get("LINUXDO_PROXY")
+    telegram_token = args.tg_token or os.environ.get("TELEGRAM_BOT_TOKEN")
+    telegram_chat_id = args.tg_chat_id or os.environ.get("TELEGRAM_CHAT_ID")
 
     # 验证必要参数
     if not username or not password:
@@ -594,20 +701,57 @@ def main():
     # 创建日志工具
     logger = Logger(debug=args.debug)
 
+    if (telegram_token and not telegram_chat_id) or (
+        telegram_chat_id and not telegram_token
+    ):
+        logger.warning("Telegram 通知未启用：请同时配置 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID")
+
+    notifier = TelegramNotifier(
+        token=telegram_token,
+        chat_id=telegram_chat_id,
+        logger=logger,
+    )
+
+    if notifier.enabled:
+        logger.info("Telegram 通知已启用")
+
     # 配置
     config = {
         "like_rate": args.like_rate / 100,  # 转换为小数
     }
 
-    # 创建机器人并运行
-    bot = LinuxDoBot(username=username, password=password, config=config, logger=logger)
+    stats = {"topics": 0, "likes": 0, "floors": 0}
+    exit_code = 1
+    error_message = ""
+    start_time = time.time()
 
-    stats = bot.run(
-        target_topics=args.topics, headless=not args.no_headless, proxy=proxy
-    )
+    try:
+        # 创建机器人并运行
+        bot = LinuxDoBot(username=username, password=password, config=config, logger=logger)
+
+        stats = bot.run(
+            target_topics=args.topics, headless=not args.no_headless, proxy=proxy
+        )
+
+        exit_code = 0 if stats.get("topics", 0) > 0 else 1
+
+    except Exception as e:
+        error_message = str(e)
+        logger.error(f"程序异常: {e}")
+
+    finally:
+        elapsed = time.time() - start_time
+        message = build_telegram_message(
+            args=args,
+            stats=stats,
+            elapsed_seconds=elapsed,
+            exit_code=exit_code,
+            error_message=error_message,
+        )
+        notifier.send_message(message)
 
     # 返回状态码
-    sys.exit(0 if stats["topics"] > 0 else 1)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
