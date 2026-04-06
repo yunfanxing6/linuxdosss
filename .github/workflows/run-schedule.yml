@@ -19,6 +19,8 @@
 # 3. 添加 Secrets（Settings -> Secrets and variables -> Actions -> New repository secret）
 #    - LINUXDO_USERNAME: 你的 Linux.do 用户名
 #    - LINUXDO_PASSWORD: 你的 Linux.do 密码
+#    - TELEGRAM_BOT_TOKEN: Telegram Bot Token（可选）
+#    - TELEGRAM_CHAT_ID: Telegram Chat ID（可选）
 #
 # 4. 启用 Actions
 #    Actions -> I understand my workflows, go ahead and enable them
@@ -97,6 +99,8 @@ jobs:
         env:
           LINUXDO_USERNAME: ${{ secrets.LINUXDO_USERNAME }}
           LINUXDO_PASSWORD: ${{ secrets.LINUXDO_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           # 获取参数（手动触发时使用输入值，定时触发时使用默认值）
           TOPICS="${{ github.event.inputs.topics || '30' }}"
