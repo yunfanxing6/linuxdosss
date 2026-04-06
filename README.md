@@ -303,12 +303,17 @@ Settings -> General -> Danger Zone -> Change visibility -> Make private
 Settings -> Secrets and variables -> Actions -> New repository secret
 ```
 
-添加以下两个 Secret：
+添加以下 Secret（前两个必填，后两个可选）：
 
 | Name | Value |
 |------|-------|
 | `LINUXDO_USERNAME` | 你的 Linux.do 用户名 |
 | `LINUXDO_PASSWORD` | 你的 Linux.do 密码 |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token（运行结束推送通知，可选） |
+| `TELEGRAM_CHAT_ID` | Telegram Chat ID（接收通知的聊天 ID，可选） |
+
+> `TELEGRAM_CHAT_ID` 获取方法：先给你的 Bot 发一条消息，然后访问
+> `https://api.telegram.org/bot<你的Token>/getUpdates`，在返回 JSON 里找到 `chat.id`。
 
 #### 4. 启用 Actions
 
@@ -376,6 +381,8 @@ python linux_do_headless.py -u 用户名 -p 密码 --proxy 127.0.0.1:7897
 # 环境变量方式
 export LINUXDO_USERNAME="用户名"
 export LINUXDO_PASSWORD="密码"
+export TELEGRAM_BOT_TOKEN="你的telegram bot token"
+export TELEGRAM_CHAT_ID="你的chat id"
 python linux_do_headless.py
 ```
 
